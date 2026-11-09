@@ -3,8 +3,6 @@
 Writes images to debug/ and prints statistics that explain WHY matching works or
 not:
   - keypoints per template, split into outer ring / inner core
-  - xray.png -> reference.png SIFT alignment (what --align tries first), with
-    inliers per region
   - a breakdown of every template keypoint under the final transform:
       inlier     matched correctly
       ambiguous  the correct point WAS the best or 2nd-best candidate, but the ratio
@@ -23,7 +21,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import align, render
+from . import render
 from .matcher import FeatureMatch, Matcher, Template
 
 RING_FRAC = 0.72   # approx. inner/outer radius ratio of the bimetallic 10 NIS coin
@@ -80,7 +78,7 @@ def label(img: np.ndarray, text: str) -> np.ndarray:
     return render.corner_label(img, text)
 
 
-def diagnose_alignment(m: Matcher, m_cfg: dict, out: Path) -> None:
+def diagnose_templates(m: Matcher) -> None:
     ref = m.front
     print("\n== Templates ==")
     for t in (ref, m.templates["back"]):
@@ -91,31 +89,8 @@ def diagnose_alignment(m: Matcher, m_cfg: dict, out: Path) -> None:
     if not m.has_reference:
         print("\nNo reference.png yet: capture one with  python main.py --capture-template (key 3)")
         return
-
-    print("\n== xray.png -> reference.png (green = inliers, red = rejected by RANSAC) ==")
-    acfg = m_cfg["xray_alignment"]
-    thr = acfg["ransac_threshold"]
-    ov = m.make_template("xray", m_cfg["assets"]["front"])
-    fm, ok = align.try_sift(m, ov, acfg)
-    if fm.M is None:
-        print(f"  SIFT: {len(fm.good)} good matches, no transform")
-    else:
-        inl_regions = [region_of(ref.keypoints[g.trainIdx].pt, ref.image.shape[:2])
-                       for g, i in zip(fm.good, fm.inlier_mask) if i]
-        print(f"  SIFT: {fm.inliers} inliers / {len(fm.good)} good  "
-              f"(ring {inl_regions.count('ring')}, core {inl_regions.count('core')})  "
-              f"rotation {align.ccw_angle(fm.M):.1f} deg, scale {math.hypot(fm.M[0, 0], fm.M[1, 0]):.3f}"
-              f"  -> {'plausible' if ok else 'REJECTED'}")
-        cv2.imwrite(str(out / "align_matches.png"),
-                    label(draw_inliers(ov, ref.image, ref.keypoints, fm), "xray -> reference"))
-
-    # Breakdown under the alignment --align would pick (not necessarily the saved one).
-    M, info = align.compute(m, ov, acfg)
-    print(f"\n  --align would use: {info}")
-    print_breakdown("what happened to each xray keypoint under that alignment:",
-                    breakdown(m, ov, ref.keypoints, ref.descriptors, M, thr))
-
-    fm = m.match_features(ref, m.templates["back"].keypoints, m.templates["back"].descriptors, thr)
+    back = m.templates["back"]
+    fm = m.match_features(ref, back.keypoints, back.descriptors, m.cfg["ransac_threshold"])
     print(f"\n  baseline, reference vs back (unrelated images): {fm.inliers} inliers / {len(fm.good)} good")
 
 
@@ -143,14 +118,14 @@ def diagnose_frame(m: Matcher, cfg: dict, path: str, out: Path) -> None:
                             breakdown(m, t, kp, des, sc.M * s, m.cfg["ransac_threshold"]))
     if res.side == "front" and m.overlay is not None:
         cv2.imwrite(str(out / f"{stem}_xray.png"),
-                    render.composite_xray(frame, m.overlay, res.M, cfg["tint"]))
+                    render.composite_xray(frame, m, res.M, cfg["tint"]))
 
 
 def run(cfg: dict, frames: list[str]) -> None:
     out = Path(cfg["debug_dir"])
     out.mkdir(parents=True, exist_ok=True)
     m = Matcher(cfg, require_overlay=False)
-    diagnose_alignment(m, cfg, out)
+    diagnose_templates(m)
     for f in frames:
         diagnose_frame(m, cfg, f, out)
     print(f"\nImages written to {out.resolve()}")

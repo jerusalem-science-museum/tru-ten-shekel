@@ -5,40 +5,58 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .matcher import MatchResult, Template
+from .matcher import Matcher, MatchResult, Template
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
-def composite_xray(frame: np.ndarray, t: Template, M: np.ndarray, tint: dict) -> np.ndarray:
-    """Warp the x-ray template onto the frame using M (template -> frame) and blend it
-    inside the coin mask."""
-    h, w = frame.shape[:2]
-    warped = cv2.warpAffine(t.image, M, (w, h), flags=cv2.INTER_LINEAR)
-    mask = cv2.warpAffine(t.mask, M, (w, h), flags=cv2.INTER_LINEAR)
+def _warp(t: Template, M: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    """Template image and soft-edged alpha (HxWx1, 0..1) warped into the frame by M."""
+    img = cv2.warpAffine(t.image, M, size, flags=cv2.INTER_LINEAR)
+    mask = cv2.warpAffine(t.mask, M, size, flags=cv2.INTER_LINEAR)
     mask = cv2.GaussianBlur(mask, (5, 5), 0)                 # soften the edge slightly
-    alpha = (mask.astype(np.float32) / 255.0)[:, :, None]
+    return img, (mask.astype(np.float32) / 255.0)[:, :, None]
 
-    background = frame.astype(np.float32)
-    coin = warped.astype(np.float32)
 
-    if tint.get("grayscale", True):
-        # X-ray look: drop colour from both the coin overlay and the surrounding frame.
-        background = cv2.cvtColor(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR).astype(np.float32)
-        coin = cv2.cvtColor(cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR).astype(np.float32)
-        if tint.get("invert"):
-            coin = 255.0 - coin                                # negative, like a radiograph (coin only)
+def _gray3(img: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
+
+
+def composite_xray(frame: np.ndarray, m: Matcher, M: np.ndarray, tint: dict) -> np.ndarray:
+    """The x-ray picture of the coin, M = reference template -> frame.
+
+    Inside the coin (front template mask): the real coin from the frame (its ring) with
+    the modified coin's core (m.overlay) on top, mixed with the whole mirrored back
+    (m.back_overlay) at weight m.back_weight, as if seen through the coin. Then the
+    whole coin is inverted / tinted. Outside: the frame (grayscale, dimmed)."""
+    h, w = frame.shape[:2]
+    gray = tint.get("grayscale", True)
+    conv = _gray3 if gray else (lambda x: x)
+
+    background = conv(frame).astype(np.float32)
+    _, coin_alpha = _warp(m.front, M, (w, h))
+
+    # Front layer: real coin (ring) + x-ray core.
+    xray, core_alpha = _warp(m.overlay, M, (w, h))
+    coin = background * (1.0 - core_alpha) + conv(xray).astype(np.float32) * core_alpha
+
+    # Mirrored back, mixed over the whole coin.
+    if m.back_overlay is not None and m.back_weight:
+        back, back_alpha = _warp(m.back_overlay, M, (w, h))
+        a = m.back_weight * back_alpha
+        coin = coin * (1.0 - a) + conv(back).astype(np.float32) * a
+
+    if tint.get("invert"):
+        coin = 255.0 - coin                                    # negative, like a radiograph (whole coin)
 
     if tint.get("enabled"):
-        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-        if tint.get("invert"):
-            gray = 1.0 - gray
-        coin = gray[:, :, None] * np.float32(tint["color_bgr"])[None, None, :]
+        g = cv2.cvtColor(np.clip(coin, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+        coin = g[:, :, None] * np.float32(tint["color_bgr"])[None, None, :]
 
     dim = float(tint.get("background_dim", 0.0)) if tint.get("enabled") else 0.0
     background *= 1.0 - dim
 
-    out = coin * alpha + background * (1.0 - alpha)
+    out = coin * coin_alpha + background * (1.0 - coin_alpha)
     return np.clip(out, 0, 255).astype(np.uint8)
 
 

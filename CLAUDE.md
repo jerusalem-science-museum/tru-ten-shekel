@@ -12,7 +12,7 @@ Windows, Python 3.12, venv at `.venv`.
 ```
 .venv\Scripts\python main.py --debug                     # exhibit, camera index from config
 .venv\Scripts\python main.py --capture-template           # capture + crop templates: 1 front (xray.png), 2 back, 3 reference
-.venv\Scripts\python main.py --align                     # once: xray.png -> assets/xray_aligned.png
+.venv\Scripts\python main.py --align                     # once: straighten the 3 photos -> assets/*_aligned.png
 .venv\Scripts\python main.py --diagnose [frame.png]      # matching diagnostics -> debug/
 ```
 
@@ -21,8 +21,8 @@ Windows, Python 3.12, venv at `.venv`.
 - `main.py`: `App` state machine (`idle` → `sweep` → `xray`, or `message`) plus the key handling loop.
 - `capture_template.py`: template capture tool (Hough circle → square crop, alpha outside the coin).
 - `xray/setup.py`: config loading, camera opening, `CameraControl` (fixed exposure/gain/WB/focus, live keys + P to save).
-- `xray/matcher.py`: SIFT + ratio test + `estimateAffinePartial2D` (RANSAC) against reference (front) and back templates. Loads the overlay (xray_aligned.png).
-- `xray/align.py`: `--align`, one-off xray.png -> reference.png alignment, writes xray_aligned.png.
+- `xray/matcher.py`: SIFT + ratio test + `estimateAffinePartial2D` (RANSAC) against reference_aligned (front) and back.png templates. Loads the overlays (xray_aligned.png core, back_aligned.png).
+- `xray/align.py`: `--align`, one-off stripe straightening of reference/xray/back.png, writes the `*_aligned.png` files.
 - `xray/diagnose.py`: `--diagnose`, match statistics and visualisations.
 - `xray/render.py`: compositing, sweep, text panels, debug view, key legend.
 - `xray/hardware.py`: `DummyHardware`, keyboard stand-in for the case microswitch and capture button.
@@ -31,10 +31,13 @@ Windows, Python 3.12, venv at `.venv`.
 ## Design decisions (agreed with the user, don't undo without asking)
 
 - **Snapshot only, no live tracking.** One capture per button press. The idle screen is the live camera plus instructions.
-- **`reference.png` (normal coin) is the match target, `xray.png` is only the overlay.** Matching the modified coin directly worked poorly. xray.png is aligned to reference.png ONCE, offline, by `--align` (SIFT, else brute-force rotation search on the core, else manual `xray_alignment.rotation_deg`), baked into assets/xray_aligned.png. No alignment at startup (user's request); the reference->frame transform applies to xray_aligned.png directly. Without reference.png it falls back to matching xray.png directly.
+- **`reference.png` (normal coin) is the match target, `xray.png` is only the overlay.** Matching the modified coin directly worked poorly. Alignment happens ONCE, offline, by `--align`: no alignment at startup (user's request). Without reference.png it falls back to matching xray.png directly; without reference_aligned.png it matches reference.png and the exhibit refuses to start until `--align` is run.
+- **`--align` straightens all three photos by the coin's stripes.** The 10 NIS coin has parallel straight stripes on the left of the core on both faces. Each photo is rotated so they are exactly vertical and on the left (whole-degree search over 360 deg + 0.1 deg refinement, maximising column sharpness of horizontal edges in the left half of the core annulus, `xray_alignment.stripe_radius`; scoring only the left half resolves the 180 deg ambiguity). Per-image overrides in `xray_alignment.manual_deg`. Outputs, all reference-template size, coin centred, alpha = coin: `reference_aligned.png` (the match target), `xray_aligned.png` (the overlay), `back_aligned.png`. So the reference_aligned->frame transform applies to the other two directly, and the reported match angle is relative to the straightened reference. Core stripes, not ring: on the modified coin the ring's stripes are a few degrees off the core's.
 - **Only the inner core is overlaid** (branch `inner-core-overlay`). The silver ring's lettering differs between coin variants, so the visitor's real ring stays visible. `Matcher.core_mask()` cuts the overlay mask to a soft circle of `overlay.core_radius_frac` (0.69, measured on reference.png) of the coin radius; null = whole coin.
-- **`back.png` is only for detecting a flipped coin**, never shown as an x-ray. Front vs. back is decided by RANSAC inlier count.
-- **xray.png is not mirrored** (user confirmed). The modified coin is a different variant ("NEW SHEKELS", different ring lettering) from the user's reference coin ("NEW SHEQALIM", "ISRAEL" on the ring), plus the hole and wear: 0 SIFT features correspond, so --align uses the rotation search (139 deg).
+- **`back.png` (as captured) is the back match template, only for detecting a flipped coin.** Front vs. back is decided by RANSAC inlier count. back.png is the modified coin's back (hole near the top).
+- **`back_aligned.png` is mirrored left-right** after straightening (as seen through the coin from the front; the user confirmed horizontal mirror is the physical flip), so its stripes are on the right. Its hole lands at the top of the rod in xray_aligned (~20 px right of the rod centre); the user decided to leave it like that (don't rotate the back to line up the hole).
+- **The back is blended into the x-ray as a mirrored weighted layer over the whole coin** (`render.composite_xray`). Front layer = the real coin from the frame (ring, inside the warped reference mask) + the xray_aligned core; then `coin = (1 - w) * front + w * back_aligned` (whole back incl. ring, inside its alpha), `w = overlay.back_weight` (0.4; 0/null = off, back_aligned.png then not needed). Mixed in grayscale when `tint.grayscale`. **`tint.invert` inverts the whole coin** (ring + core + back), background untouched (user approved a preview). The colour tint uses the same mixed coin gray. Tuned live with o/O in `--debug` (re-renders the x-ray on screen; P saves it with the camera values).
+- **xray.png is not mirrored** (user confirmed). The modified coin is a different variant ("NEW SHEKELS", different ring lettering) from the user's reference coin ("NEW SHEQALIM", "ISRAEL" on the ring), plus the hole and wear: 0 SIFT features correspond, which is why --align uses the stripes instead of SIFT.
 - **Similarity transform, not homography.** The coin lies flat under a top-down camera. `scale_range` rejects degenerate fits.
 - **The trigger is separate from the action.** `on_capture_button()` checks the case and calls `capture_and_show_xray()` → `show_xray()`, so a future real button, lid switch, etc. can call these directly.
 - **No auto-trigger.** Capture happens only on the button press, and only while the case is closed. Opening the case ends the x-ray.

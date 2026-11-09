@@ -1,12 +1,14 @@
 """SIFT matching of a captured frame against the coin templates.
 
 Matching targets:
-  front = assets/reference.png (a normal coin, palm side). Falls back to xray.png if missing.
-  back  = assets/back.png (only used to detect a flipped coin).
+  front = assets/reference_aligned.png (a normal coin, palm side, straightened by
+          `python main.py --align`). Falls back to reference.png, then xray.png, if missing.
+  back  = assets/back.png as captured (only used to detect a flipped coin).
 
-The overlay is assets/xray_aligned.png: xray.png (the modified coin) already warped
-into reference.png's pixel coordinates, made once by `python main.py --align`
-(see align.py). So the reference -> frame transform applies to the overlay as-is.
+The overlay is assets/xray_aligned.png: xray.png (the modified coin) straightened into
+the same frame as reference_aligned.png by --align (see align.py). So the reference ->
+frame transform applies to the overlay (and to back_aligned.png, blended over the whole
+coin at overlay.back_weight) as-is.
 
 All transforms are 2x3 similarity transforms (rotation + uniform scale + translation).
 The coin lies flat under a top-down camera, so this is enough and more robust than a
@@ -112,35 +114,71 @@ class Matcher:
         self.sift = cv2.SIFT_create(nfeatures=self.cfg["sift_features"])
         self.bf = cv2.BFMatcher(cv2.NORM_L2)
 
-        ref_path = assets["reference"]
-        self.has_reference = Path(ref_path).exists()
-        if not self.has_reference:
-            print(f"[matcher] WARNING: {ref_path} missing, matching against xray.png directly. "
+        self.has_reference = Path(assets["reference"]).exists()
+        # The straightened reference made by --align, in the same frame as xray_aligned.
+        self.aligned = self.has_reference and Path(assets["reference_aligned"]).exists()
+        if self.aligned:
+            ref_path = assets["reference_aligned"]
+        elif self.has_reference:
+            print(f"[matcher] WARNING: {assets['reference_aligned']} missing, matching against "
+                  f"reference.png as captured. Run once: python main.py --align")
+            ref_path = assets["reference"]
+        else:
+            print(f"[matcher] WARNING: {assets['reference']} missing, matching against xray.png directly. "
                   f"Capture one with: python main.py --capture-template (key 3)")
             ref_path = assets["front"]
 
         self.templates: dict[str, Template] = {
             "front": self.make_template("front", ref_path),
-            "back": self.make_template("back", assets["back"]),
+            # As captured, only detects a flip. Core only (matching.back_core_only): the ring
+            # lettering differs between mint years, so it would not match the visitor's coin.
+            "back": self.make_template("back", assets["back"],
+                                       core_only=self.cfg.get("back_core_only", True)),
         }
         self.overlay = self._load_overlay(assets, require_overlay)
+        # Mirrored back, blended over the whole coin at this weight. 0/null = off.
+        self.back_weight = float(cfg.get("overlay", {}).get("back_weight") or 0.0)
+        self.back_overlay = self._load_back_overlay(assets, require_overlay)
+
+    def _load_back_overlay(self, assets: dict, required: bool) -> Template | None:
+        """back_aligned.png (made by --align, mirrored, same frame as the overlay), or
+        None if there is no aligned reference to place it with. Loaded even at weight 0 so
+        the weight can be raised live (o/O in --debug); only required when the weight > 0."""
+        if self.overlay is None or not self.aligned:
+            return None
+        path = assets["back_aligned"]
+        if not Path(path).exists():
+            if not self.back_weight:
+                return None
+            if required:
+                raise SystemExit(f"{path} missing. Run once: python main.py --align "
+                                 f"(or set overlay.back_weight: 0)")
+            print(f"[matcher] WARNING: {path} missing, x-ray without the back. Run: python main.py --align")
+            return None
+        img, mask = load_image(path, self.max_dim)
+        if img.shape[:2] != self.front.image.shape[:2]:
+            print(f"[matcher] WARNING: back overlay size {img.shape[1]}x{img.shape[0]} != reference size. "
+                  f"Re-run: python main.py --align")
+        return Template("back_xray", img, mask, [], None)
 
     def _load_overlay(self, assets: dict, required: bool) -> Template | None:
         """The x-ray image in the front template's pixel coordinates, so the frame
         transform applies to it directly. With a reference that is xray_aligned.png,
-        produced once by `python main.py --align`."""
+        produced once by `python main.py --align` together with reference_aligned.png."""
         if not self.has_reference:
             path = assets["front"]
         else:
             path = assets["xray_aligned"]
-            if not Path(path).exists():
+            if not self.aligned or not Path(path).exists():
                 if required:
-                    raise SystemExit(f"{path} missing. Run once: python main.py --align")
+                    raise SystemExit(f"{path} or reference_aligned.png missing. Run once: python main.py --align")
                 return None
-            newest_src = max(Path(assets[k]).stat().st_mtime for k in ("reference", "front"))
-            if Path(path).stat().st_mtime < newest_src:
-                print(f"[matcher] WARNING: reference.png or xray.png changed after {path} was made. "
-                      f"Re-run: python main.py --align")
+            made = [Path(assets[k]).stat().st_mtime for k in ("reference_aligned", "xray_aligned", "back_aligned")
+                    if Path(assets[k]).exists()]
+            newest_src = max(Path(assets[k]).stat().st_mtime for k in ("reference", "front", "back"))
+            if min(made) < newest_src:
+                print("[matcher] WARNING: reference.png, xray.png or back.png changed after the aligned "
+                      "images were made. Re-run: python main.py --align")
         img, mask = load_image(path, self.max_dim)
         if img.shape[:2] != self.front.image.shape[:2]:
             print(f"[matcher] WARNING: overlay size {img.shape[1]}x{img.shape[0]} != reference size. "
@@ -164,8 +202,10 @@ class Matcher:
         alpha = np.clip((frac - r) / feather + 0.5, 0, 1)        # 1 inside, ramps to 0 across the edge
         return np.minimum(coin_mask, (alpha * 255).astype(np.uint8))
 
-    def make_template(self, name: str, path: str) -> Template:
+    def make_template(self, name: str, path: str, core_only: bool = False) -> Template:
         img, mask = load_image(path, self.max_dim)
+        if core_only:
+            mask = self.core_mask(mask)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         kp, des = self.sift.detectAndCompute(gray, mask)
         print(f"[matcher] {name}: {len(kp)} keypoints from {path}")
@@ -204,8 +244,13 @@ class Matcher:
         for name, t in self.templates.items():
             result.scores[name] = self._score(t, kp, des, s)
 
+        # The back has its own (lower) threshold: it only decides "flip it" vs. "not found",
+        # so a false positive there is cheap, and its core-only template has fewer features.
         best = max(result.scores, key=lambda n: result.scores[n].inliers)
-        if result.scores[best].inliers >= self.cfg["min_inliers"]:
+        need = self.cfg["min_inliers"]
+        if best == "back":
+            need = self.cfg.get("min_inliers_back") or need
+        if result.scores[best].inliers >= need:
             result.side = best
         return result
 

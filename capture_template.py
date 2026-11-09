@@ -170,7 +170,7 @@ def run(cfg: dict, source: int, side: str = "front") -> None:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(out_path), crop)
             print(f"Saved {out_path} ({crop.shape[1]}x{crop.shape[0]})")
-            if side in ("reference", "front"):
+            if side in ("reference", "front", "back"):
                 print("Re-run the alignment: python main.py --align")
             cv2.imshow(WIN, preview_on_checker(crop))
             cv2.waitKey(1500)

@@ -16,7 +16,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> dict:
     cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
     cfg["config_path"] = str(path)  # CameraControl writes tuned values back here
     # Resolve asset paths relative to the config file.
-    for key in ("reference", "front", "back", "xray_aligned"):
+    for key in ("reference", "front", "back", "reference_aligned", "xray_aligned", "back_aligned"):
         cfg["assets"][key] = str(path.parent / cfg["assets"][key])
     cfg["debug_dir"] = str(path.parent / cfg.get("debug_dir", "debug"))
     return cfg
@@ -90,18 +90,24 @@ class CameraControl:
 
     def save(self) -> None:
         """Write the current values into the camera section of config.yaml, keeping comments."""
-        text = self.config_path.read_text(encoding="utf-8")
-        m = re.search(r"^camera:\n(?:[ \t].*\n|\n)*", text, re.M)
-        if not m:
-            print("[camera] no camera section in config.yaml, nothing saved")
-            return
-        section = m.group(0)
-        for key in PARAMS:
-            section = re.sub(rf"^(\s+{key}:[ \t]*)[^#\n]*?([ \t]*(#.*)?)$",
-                             lambda mm, v=self.value(key): f"{mm.group(1)}{v:g}{mm.group(2)}",
-                             section, count=1, flags=re.M)
-        self.config_path.write_text(text[:m.start()] + section + text[m.end():], encoding="utf-8")
-        print(f"[camera] saved to {self.config_path}: {self.status()}")
+        if save_config_values(self.config_path, "camera", {k: self.value(k) for k in PARAMS}):
+            print(f"[camera] saved to {self.config_path}: {self.status()}")
+
+
+def save_config_values(path: Path, section_name: str, values: dict[str, float]) -> bool:
+    """Replace `key: value` lines inside a top-level section of config.yaml, keeping comments."""
+    text = path.read_text(encoding="utf-8")
+    m = re.search(rf"^{section_name}:\n(?:[ \t].*\n|\n)*", text, re.M)
+    if not m:
+        print(f"[config] no {section_name} section in {path}, nothing saved")
+        return False
+    section = m.group(0)
+    for key, v in values.items():
+        section = re.sub(rf"^(\s+{key}:[ \t]*)[^#\n]*?([ \t]*(#.*)?)$",
+                         lambda mm, v=v: f"{mm.group(1)}{v:g}{mm.group(2)}",
+                         section, count=1, flags=re.M)
+    path.write_text(text[:m.start()] + section + text[m.end():], encoding="utf-8")
+    return True
 
 
 def open_camera(index: int, cfg: dict) -> tuple[cv2.VideoCapture, CameraControl]:

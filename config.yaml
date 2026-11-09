@@ -19,10 +19,14 @@ camera:
     focus: 5
 
 assets:
-  reference: assets/reference.png  # normal coin, palm side. The match target (falls back to xray.png if missing).
+  reference: assets/reference.png  # normal coin, palm side. Source of the match target (falls back to xray.png if missing).
   front: assets/xray.png   # modified coin, palm side. Source of the overlay.
-  xray_aligned: assets/xray_aligned.png  # xray.png warped onto reference.png, made by --align. The overlay.
-  back: assets/back.png    # reverse side. Used only to detect a flipped coin.
+  back: assets/back.png    # reverse side. Matched as-is, only to detect a flipped coin.
+  # Made by --align: the photos rotated so the coin's stripes are vertical (one shared
+  # frame, the reference template's size, coin centred).
+  reference_aligned: assets/reference_aligned.png  # the match target
+  xray_aligned: assets/xray_aligned.png            # the overlay
+  back_aligned: assets/back_aligned.png            # mirrored left-right, as seen through the coin from the front
   template_max_dim: 800    # templates are resized so their longest side is this
 
 capture_template:          # used by capture_template.py / main.py --capture-template
@@ -43,24 +47,35 @@ matching:
   ratio_test: 0.8          # Lowe's ratio test
   ransac_threshold: 5.0    # pixels (in downscaled frame)
   min_inliers: 12          # below this the side is considered "not found"
+  # Back side (flipped coin): only decides "flip it" vs. "couldn't see the coin", so it can
+  # be lower. Tune on the rig with --diagnose on a back-up capture. null = min_inliers.
+  min_inliers_back: 8
+  back_core_only: true     # match only the back's inner core (overlay.core_radius_frac): ring text varies by year
   # Allowed template->frame scale. Once the rig is fixed, tighten this around
   # the value printed in debug (e.g. [0.9*x, 1.1*x]) to kill false positives.
   scale_range: [0.8, 1.2]  # rig measured 0.977 (debug/capture_20261109_130132.png)
 
-# How `python main.py --align` places xray.png onto reference.png (run once, after
-# capturing either). Check the result in debug/xray_on_reference.png.
+# How `python main.py --align` straightens the three photos (run once, after capturing
+# any of them): each is rotated so the stripes on the left of the core are vertical.
+# Check the result in debug/aligned_preview.png.
 xray_alignment:
-  mode: auto               # auto = SIFT, else rotation search; manual = rotation_deg
-  min_inliers: 12          # fewer SIFT inliers than this = SIFT failed
-  ransac_threshold: 4.0    # pixels (template size)
-  search_radius: 0.62      # rotation search looks inside this fraction of the coin radius (the core)
-  rotation_deg: 0          # manual mode: counter-clockwise degrees, as printed by --align
+  stripe_radius: [0.3, 0.68]  # the stripes are looked for between these fractions of the coin radius
+                              # (left half). The core only: on the modified coin the ring's stripes
+                              # sit a few degrees off the core's, and only the core is overlaid
+  manual_deg:              # null = detect. Else counter-clockwise degrees, as printed by --align
+    reference: null        # (for back: the rotation before mirroring)
+    xray: null
+    back: null
 
 # Which part of xray_aligned.png is shown. Only the inner core by default: the silver
 # ring's lettering differs between coin variants, so the visitor's real ring stays.
 overlay:
   core_radius_frac: 0.69   # core radius / coin radius (measured on reference.png). null = whole coin
   feather_frac: 0.02       # soft edge width, fraction of the coin radius
+  # The coin's back (back_aligned.png, mirrored as if seen through the coin) is mixed over
+  # the WHOLE coin: coin = (1 - w) * (real ring + x-ray core) + w * back. 0/null = no back
+  back_weight: 0.4
+  back_weight_step: 0.05   # o/O in --debug lower/raise back_weight by this (0..1); P saves it
 
 debug_dir: debug          # --diagnose output and S-key frame saves
 
@@ -77,7 +92,7 @@ display:
 tint:
   grayscale: true              # render the x-ray result (coin + background) in grayscale
   enabled: false
-  invert: true                 # invert the coin's grays (dark <-> bright); background untouched
+  invert: true                 # invert the whole coin (ring + core + back blend); background untouched
   color_bgr: [255, 220, 120]   # tint colour applied to the grayscale coin
   background_dim: 0.0          # 0..1, darkens everything outside the coin
 
@@ -91,8 +106,8 @@ text:
     - "Place a 10 NIS coin palm-side up"
     - "Close the lid and press the button"
   flipped:
-    - "The coin is upside down"
-    - "Flip it and try again"
+    - "That's the back of the coin"
+    - "Flip it to the front and try again"
   no_match:
     - "Couldn't see the coin"
-    - "Make sure it's palm-side up and try again"
+    - "Place it in the middle and try again"
