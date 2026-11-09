@@ -4,6 +4,10 @@ A visitor places a 10 NIS coin palm-side up in the box, closes the lid and press
 button. The camera captures a photo, finds the coin's position/rotation with SIFT, and a
 scanline sweep reveals the "inside" of the coin (a photo of our modified coin) aligned to it.
 
+[![Example run](docs/example.gif)](docs/example.mp4)
+
+*Example run (click for the 720p video).*
+
 ## Setup
 
 ```
