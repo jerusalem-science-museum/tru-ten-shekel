@@ -1,0 +1,92 @@
+# X-ray coin exhibit configuration
+
+camera:
+  index: 1           # overridden by --source
+  fourcc: MJPG        # compressed stream; uncompressed YUY2 at 1080p is often ~5 fps over USB. null = driver default
+  width: 1920
+  height: 1080
+  # Fixed image parameters (no auto modes), applied as soon as the camera opens, so
+  # colours and brightness never drift. Tune live in --debug or the capture tool
+  # (lowercase key lowers, shift raises), then P writes them back here.
+  exposure: -8          # b/B. DirectShow: ~log2(seconds), -6 = 1/64 s
+  gain: 5               # g/G
+  wb_temperature: 4700  # w/W. Kelvin
+  focus: -1              # f/F. Driver units; 0 is often infinity
+  adjust_steps:         # change per key press
+    exposure: 1
+    gain: 5
+    wb_temperature: 200
+    focus: 5
+
+assets:
+  reference: assets/reference.png  # normal coin, palm side. The match target (falls back to xray.png if missing).
+  front: assets/xray.png   # modified coin, palm side. Source of the overlay.
+  xray_aligned: assets/xray_aligned.png  # xray.png warped onto reference.png, made by --align. The overlay.
+  back: assets/back.png    # reverse side. Used only to detect a flipped coin.
+  template_max_dim: 800    # templates are resized so their longest side is this
+
+capture_template:          # used by capture_template.py / main.py --capture-template
+  detect_max_dim: 1920     # circle detection resolution. 1920 = full res (640 was coarse and jumpy, but faster)
+  blur_sigma: 3            # Gaussian blur before detection, full-res pixels. Too low: noisy and may lock
+                           # onto the inner rim bevel. Too high (~5+): the coin is often not found
+  smooth_frames: 15        # the shown/saved circle is the median of this many recent detections
+  smooth_reset_frac: 0.1   # a detection this far off (fraction of the radius) = coin moved, restart
+  circularity: 0.85        # HoughCircles ALT param2 (0..1, higher = stricter)
+  min_radius_frac: 0.05    # coin radius limits, as a fraction of frame height
+  max_radius_frac: 0.5
+  margin: 0.02             # extra crop around the detected rim
+
+matching:
+  frame_max_dim: 1920      # captured frame is downscaled to this for SIFT. 1920 = full res:
+                           # the coin is only ~480 px, downscaling cost half the inliers
+  sift_features: 0         # 0 = unlimited
+  ratio_test: 0.8          # Lowe's ratio test
+  ransac_threshold: 5.0    # pixels (in downscaled frame)
+  min_inliers: 12          # below this the side is considered "not found"
+  # Allowed template->frame scale. Once the rig is fixed, tighten this around
+  # the value printed in debug (e.g. [0.9*x, 1.1*x]) to kill false positives.
+  scale_range: [0.8, 1.2]  # rig measured 0.977 (debug/capture_20261109_130132.png)
+
+# How `python main.py --align` places xray.png onto reference.png (run once, after
+# capturing either). Check the result in debug/xray_on_reference.png.
+xray_alignment:
+  mode: auto               # auto = SIFT, else rotation search; manual = rotation_deg
+  min_inliers: 12          # fewer SIFT inliers than this = SIFT failed
+  ransac_threshold: 4.0    # pixels (template size)
+  search_radius: 0.62      # rotation search looks inside this fraction of the coin radius (the core)
+  rotation_deg: 0          # manual mode: counter-clockwise degrees, as printed by --align
+
+debug_dir: debug           # --diagnose output and S-key frame saves
+
+timing:
+  sweep_seconds: 1.5
+  xray_hold_seconds: 20
+  message_seconds: 5
+
+display:
+  window_name: X-Ray
+  fullscreen: true
+
+# X-ray look. Starts as pass-through (no colour changes).
+tint:
+  grayscale: true              # render the x-ray result (coin + background) in grayscale
+  enabled: false
+  invert: true                 # invert the coin's grays (dark <-> bright); background untouched
+  color_bgr: [255, 220, 120]   # tint colour applied to the grayscale coin
+  background_dim: 0.0          # 0..1, darkens everything outside the coin
+
+sweep:
+  line_color_bgr: [255, 255, 180]
+  line_thickness: 4
+  glow: 30                     # glow height in pixels above/below the line
+
+text:
+  instructions:
+    - "Place a 10 NIS coin palm-side up"
+    - "Close the lid and press the button"
+  flipped:
+    - "The coin is upside down"
+    - "Flip it and try again"
+  no_match:
+    - "Couldn't see the coin"
+    - "Make sure it's palm-side up and try again"
