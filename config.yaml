@@ -56,7 +56,13 @@ xray_alignment:
   search_radius: 0.62      # rotation search looks inside this fraction of the coin radius (the core)
   rotation_deg: 0          # manual mode: counter-clockwise degrees, as printed by --align
 
-debug_dir: debug           # --diagnose output and S-key frame saves
+# Which part of xray_aligned.png is shown. Only the inner core by default: the silver
+# ring's lettering differs between coin variants, so the visitor's real ring stays.
+overlay:
+  core_radius_frac: 0.69   # core radius / coin radius (measured on reference.png). null = whole coin
+  feather_frac: 0.02       # soft edge width, fraction of the coin radius
+
+debug_dir: debug          # --diagnose output and S-key frame saves
 
 timing:
   sweep_seconds: 1.5

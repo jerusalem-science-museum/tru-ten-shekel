@@ -32,6 +32,7 @@ Windows, Python 3.12, venv at `.venv`.
 
 - **Snapshot only, no live tracking.** One capture per button press. The idle screen is the live camera plus instructions.
 - **`reference.png` (normal coin) is the match target, `xray.png` is only the overlay.** Matching the modified coin directly worked poorly. xray.png is aligned to reference.png ONCE, offline, by `--align` (SIFT, else brute-force rotation search on the core, else manual `xray_alignment.rotation_deg`), baked into assets/xray_aligned.png. No alignment at startup (user's request); the reference->frame transform applies to xray_aligned.png directly. Without reference.png it falls back to matching xray.png directly.
+- **Only the inner core is overlaid** (branch `inner-core-overlay`). The silver ring's lettering differs between coin variants, so the visitor's real ring stays visible. `Matcher.core_mask()` cuts the overlay mask to a soft circle of `overlay.core_radius_frac` (0.69, measured on reference.png) of the coin radius; null = whole coin.
 - **`back.png` is only for detecting a flipped coin**, never shown as an x-ray. Front vs. back is decided by RANSAC inlier count.
 - **xray.png is not mirrored** (user confirmed). The modified coin is a different variant ("NEW SHEKELS", different ring lettering) from the user's reference coin ("NEW SHEQALIM", "ISRAEL" on the ring), plus the hole and wear: 0 SIFT features correspond, so --align uses the rotation search (139 deg).
 - **Similarity transform, not homography.** The coin lies flat under a top-down camera. `scale_range` rejects degenerate fits.

@@ -106,6 +106,7 @@ def load_image(path: str, max_dim: int) -> tuple[np.ndarray, np.ndarray]:
 class Matcher:
     def __init__(self, cfg: dict, require_overlay: bool = True):
         self.cfg = cfg["matching"]
+        self.full_cfg = cfg
         assets = cfg["assets"]
         self.max_dim = assets["template_max_dim"]
         self.sift = cv2.SIFT_create(nfeatures=self.cfg["sift_features"])
@@ -144,7 +145,24 @@ class Matcher:
         if img.shape[:2] != self.front.image.shape[:2]:
             print(f"[matcher] WARNING: overlay size {img.shape[1]}x{img.shape[0]} != reference size. "
                   f"Re-run: python main.py --align")
-        return Template("xray", img, mask, [], None)
+        return Template("xray", img, self.core_mask(mask), [], None)
+
+    def core_mask(self, coin_mask: np.ndarray) -> np.ndarray:
+        """Restrict the overlay to the inner core, so the real coin's silver ring (whose
+        lettering differs between coin variants) stays visible. Soft-edged circle around
+        the coin mask's centre, `overlay.core_radius_frac` of the coin radius."""
+        ocfg = self.full_cfg.get("overlay", {})
+        frac = ocfg.get("core_radius_frac")
+        if not frac:
+            return coin_mask                                     # null/0 = whole coin
+        ys, xs = np.nonzero(coin_mask)
+        cx, cy = xs.mean(), ys.mean()
+        coin_r = math.sqrt(len(xs) / math.pi)
+        yy, xx = np.mgrid[:coin_mask.shape[0], :coin_mask.shape[1]]
+        r = np.hypot(xx - cx, yy - cy) / coin_r
+        feather = max(float(ocfg.get("feather_frac", 0.0)), 1e-6)
+        alpha = np.clip((frac - r) / feather + 0.5, 0, 1)        # 1 inside, ramps to 0 across the edge
+        return np.minimum(coin_mask, (alpha * 255).astype(np.uint8))
 
     def make_template(self, name: str, path: str) -> Template:
         img, mask = load_image(path, self.max_dim)
